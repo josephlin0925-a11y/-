@@ -1,0 +1,123 @@
+# =====================================================================
+# 1. 系統大打包：安裝所有必備套件與架站工具
+# =====================================================================
+print("🚀 [系統啟動] 正在配置一條龍 AI 網頁系統... (大約需要 1-2 分鐘)")
+!pip install --upgrade yt-dlp -q
+!pip install streamlit demucs librosa matplotlib seaborn numpy -q
+!apt-get install ffmpeg -y -qq
+!npm install -g localtunnel -q
+print("🎉 [成功] 環境配置完成！")
+
+# =====================================================================
+# 2. 📝 寫入網頁端程式碼檔案 (app.py)
+# =====================================================================
+%%writefile app.py
+import streamlit as st
+import os
+import shutil
+import requests
+import re
+import librosa
+import numpy as np
+
+st.set_page_config(page_title="Meta AI 樂器辨識觀測站", page_icon="🎵", layout="centered")
+st.title("🎵 Meta AI 樂器辨識觀測站")
+st.markdown("貼入任何公開的 YouTube 網址，讓 Meta 深度學習模型幫你拆解並辨識裡面的樂器成分！")
+
+# 網頁輸入框
+youtube_url = st.text_input("🔗 請貼入 YouTube 影片網址：", "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+
+if st.button("🚀 開始 AI 核心分析 (全曲)"):
+    if not youtube_url:
+        st.warning("請先輸入網址喔！")
+    else:
+        with st.spinner("🧹 正在初始化快取與大掃除戰場..."):
+            # 每次點擊按鈕，自動清空上一次的暫存，保證切換網址順暢
+            for path in ['target_audio.m4a', 'target_audio.wav', 'separated']:
+                if os.path.exists(path):
+                    if os.path.isdir(path): shutil.rmtree(path)
+                    else: os.remove(path)
+
+        # ---- A. 轉運站防封鎖下載 ----
+        with st.spinner("📡 正在透過全球防封鎖轉運站下載音軌 (繞過 429 限制)..."):
+            video_id_match = re.search(r'(?:v=|\/)([a-zA-Z0-9_-]{11})', youtube_url)
+            if not video_id_match:
+                st.error("網址格式解析失敗，請確認是否為正確的 YouTube 連結。")
+            else:
+                video_id = video_id_match.group(1)
+                invidious_instances = [
+                    "https://invidious.nerdvpn.de",
+                    "https://inv.nadeko.net",
+                    "https://invidious.flokinet.to"
+                ]
+                download_success = False
+                for instance in invidious_instances:
+                    try:
+                        audio_url = f"{instance}/latest_version?id={video_id}&itag=140"
+                        r = requests.get(audio_url, stream=True, timeout=10)
+                        if r.status_code == 200:
+                            with open("target_audio.m4a", "wb") as f:
+                                for chunk in r.iter_content(chunk_size=1024):
+                                    if chunk: f.write(chunk)
+                            # 使用 ffmpeg 轉成 wav 格式
+                            os.system("ffmpeg -i target_audio.m4a -y target_audio.wav -loglevel quiet")
+                            download_success = True
+                            st.success(f"✅ 成功透過轉運節點下載音訊！")
+                            break
+                    except Exception:
+                        continue
+
+        # ---- B. AI 核心運算 ----
+        if os.path.exists('target_audio.wav'):
+            # 讀取基本資訊
+            y, sr = librosa.load('target_audio.wav', sr=None, duration=5)
+            
+            with st.spinner("🧠 Meta AI 正在瘋狂碎裂音軌並分析結構... (整首歌分析約需 1-2 分鐘，請耐心等候)"):
+                # 呼叫 Meta Demucs 指令
+                os.system('demucs -two-stems=none "target_audio.wav"')
+                
+            # ---- C. 樂器能量掃描與呈現 ----
+            result_path = os.path.join('separated', 'htdemucs', 'target_audio')
+            instruments = {
+                'vocals': '🎤 人聲 (Vocals)',
+                'drums': '🥁 鼓組 / 打擊樂器 (Drums)',
+                'bass': '🎸 貝斯 / 低音聲部 (Bass)',
+                'other': '🎹 鍵盤 / 吉他 / 弦樂 / 其他伴奏 (Other)'
+            }
+            detected_instruments = []
+            
+            if os.path.exists(result_path):
+                st.balloons() # 成功彈出慶祝氣球
+                st.subheader("🤖 AI 樂器辨識最終報告")
+                
+                for key, name in instruments.items():
+                    track_file = os.path.join(result_path, f"{key}.wav")
+                    if os.path.exists(track_file):
+                        ty, tsr = librosa.load(track_file, sr=None, duration=30)
+                        rms = np.mean(librosa.feature.rms(y=ty))
+                        if rms > 0.002:
+                            detected_instruments.append(name)
+                            # 在網頁上直接提供拆開後的單獨音軌試聽與下載！
+                            st.markdown(f"### {name}")
+                            st.audio(track_file, format="audio/wav")
+                
+                # 總結面板
+                st.info(f"💡 本次全曲分析結論：這首歌曲主要由 " + "、".join([i.split()[-1] for i in detected_instruments]) + " 組成。")
+            else:
+                st.error("❌ AI 分離失敗。請回到 Colab 檢查右上角是否切換為【T4 GPU】環境。")
+        else:
+            st.error("❌ 轉運站下載失敗，可能所有節點目前滿載中。請稍等幾分鐘後再試一次，或更換其他流行歌網址！")
+
+# =====================================================================
+# 3. 🌐 啟動本地伺服器並產生對外網址
+# =====================================================================
+import urllib
+print("\n" + "="*50)
+print("🔑 您的專屬網站登入密碼 (Tunnel Password) 為:")
+print(urllib.request.urlopen('https://ipv4.icanhazip.com').read().decode('utf8').strip())
+print("="*50)
+print("👉 【請點擊下方藍色 localtunnel 網址連結】")
+print("👉 進入網頁後，在 'Tunnel Password' 欄位填入上方的密碼，按下 Submit 即可進入你的 AI 網站！\n")
+
+# 在背景啟動 Streamlit 架站服務，並用 localtunnel 穿透出來
+!streamlit run app.py & npx localtunnel --port 8501
